@@ -1,0 +1,63 @@
+version: '3'
+
+# This project's data layer is Neon (Postgres) + Upstash/local Redis (BullMQ)
+# — both managed/cloud in production, no Docker/WSL dependency for local dev.
+# See .env.example for DATABASE_URL/REDIS_URL setup.
+#
+# Port 3005 is reserved for this project in the local multi-project setup —
+# see root PORTS.md (3000 = llm-web-bridge, 3001/3002 = job-match-resume-engine
+# api/web, 3003 = linkedin-post-generator, 3004 = freelance-client-acquisition-tool).
+#
+# `dev`/`run` do not check for a live DATABASE_URL/REDIS_URL — the app boots
+# fine without them, it just can't serve requests that touch the DB/queue.
+
+vars:
+  PORT: '3005'
+
+tasks:
+  install:
+    desc: Install dependencies
+    cmds:
+      - npm install
+
+  dev:
+    desc: Run the Next.js dev server on port {{.PORT}} (foreground, hot-reload)
+    cmds:
+      - npx next dev -p {{.PORT}}
+
+  run:
+    desc: Build and run the Next.js app in production mode on port {{.PORT}}
+    cmds:
+      - npx next build
+      - npx next start -p {{.PORT}}
+
+  worker:
+    desc: Run the BullMQ research-run worker in the foreground (Ctrl+C to stop)
+    cmds:
+      - npx tsx watch src/features/jobs/worker.ts
+
+  stop:
+    desc: Kill whatever is listening on port {{.PORT}} (Windows/PowerShell)
+    cmds:
+      - |
+        powershell -NoProfile -Command "& {
+          \$conns = Get-NetTCPConnection -LocalPort {{.PORT}} -State Listen -ErrorAction SilentlyContinue;
+          if (\$conns) {
+            \$conns | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object {
+              Write-Host ('Stopping process ' + \$_ + ' on port {{.PORT}}');
+              Stop-Process -Id \$_ -Force -ErrorAction SilentlyContinue
+            }
+          } else {
+            Write-Host 'Nothing listening on port {{.PORT}}'
+          }
+        }"
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - npx vitest run
+
+  help:
+    desc: List all available tasks
+    cmds:
+      - task --list

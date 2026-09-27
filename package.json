@@ -1,0 +1,42 @@
+{
+  "name": "product-intelligence-engine",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Self-hosted product-research platform for discovering and validating ecommerce/dropshipping product candidates from real, evidence-backed signals.",
+  "scripts": {
+    "dev": "next dev -p 3005",
+    "build": "next build",
+    "start": "next start -p 3005",
+    "worker": "tsx watch src/features/jobs/worker.ts",
+    "typecheck": "tsc --noEmit",
+    "prisma:validate": "prisma validate",
+    "prisma:generate": "prisma generate",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.3",
+    "bullmq": "^6.3.9",
+    "ioredis": "^6.0.0",
+    "next": "15.5.26",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "prisma": "6.19.3",
+    "tailwindcss": "^4.3.3",
+    "tsx": "^4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "^3.0.0"
+  },
+  "allowScripts": {
+    "@prisma/engines@6.19.3": true,
+    "prisma@6.19.3": true,
+    "@prisma/client@6.19.3": true
+  }
+}

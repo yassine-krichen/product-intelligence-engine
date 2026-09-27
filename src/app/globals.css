@@ -1,0 +1,15 @@
+@import 'tailwindcss';
+
+:root {
+  color-scheme: light dark;
+}
+
+body {
+  @apply bg-neutral-50 text-neutral-900 dark:bg-neutral-950 dark:text-neutral-100;
+}
+
+/* Dense/functional per spec section 13 — tabular numbers everywhere a
+   metric, price, or timestamp appears, so columns of digits actually align. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}

@@ -1,0 +1,289 @@
+// Product Intelligence Engine — data model
+//
+// Phase 1 scope: Product, ProductSourceRecord, PriceObservation,
+// DemandObservation, ResearchRun, ResearchEvidence, ProductScoreDimension are
+// live (written to by the discovery pipeline / scoring engine).
+// TrendObservation, SupplierObservation, CompetitorObservation are schema-only
+// in Phase 1 — no writer exists yet (Phase 2/3), but the shape is defined now
+// so later phases don't require a migration to bolt on the concept.
+//
+// Design rule (spec section 6): there is never a single "score" field on
+// Product. Every scoring dimension is its own ProductScoreDimension row, so a
+// candidate can be strong on one axis and UNKNOWN on another without lying
+// about precision it doesn't have.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// External source a signal/observation can come from. Kept as an enum
+/// (rather than a free string) so adapters and scoring code share one set of
+/// valid values; stub sources are included so the interface can be proven
+/// provider-agnostic without a real integration.
+enum SourceId {
+  REDDIT
+  HACKER_NEWS
+  TIKTOK
+  AMAZON
+  ALIEXPRESS
+}
+
+enum ResearchRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  PARTIAL
+  FAILED
+}
+
+enum ScoreDimension {
+  DEMAND_MOMENTUM
+  ECONOMICS
+  COMPETITION
+  SUPPLIER_QUALITY
+  PRODUCT_SUITABILITY
+}
+
+enum ScoreStatus {
+  COMPUTED
+  INSUFFICIENT_DATA
+}
+
+model Product {
+  id             String   @id @default(cuid())
+  canonicalName  String
+  /// Deterministic normalization of the discovery-source title (lowercase,
+  /// punctuation/stopwords stripped) — the dedup key across sources.
+  normalizedName String   @unique
+  description    String?
+  category       String?
+  niche          String?
+  images         String[] @default([])
+  variants       Json?
+  /// Convenience rollup of every URL a source has observed this product at.
+  /// The authoritative per-source record lives in ProductSourceRecord —
+  /// this field exists only so the UI doesn't have to join for a quick list.
+  sourceUrls     String[] @default([])
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  /// The research run that first discovered this product, if any (manual
+  /// product entry in a later phase would leave this null). Lets
+  /// GET /api/research-runs/[id] list the candidates a run produced without
+  /// a separate join table — a deliberate, documented deviation from the
+  /// spec's literal entity list (see REUSE.md / README "Deviations").
+  discoveredInRunId String?
+  /// SetNull (not the implicit Restrict default): a ResearchRun should be
+  /// prunable later without being blocked by every product it discovered.
+  discoveredInRun   ResearchRun? @relation(fields: [discoveredInRunId], references: [id], onDelete: SetNull)
+
+  sourceRecords          ProductSourceRecord[]
+  priceObservations      PriceObservation[]
+  demandObservations     DemandObservation[]
+  trendObservations      TrendObservation[]
+  supplierObservations   SupplierObservation[]
+  competitorObservations CompetitorObservation[]
+  evidence               ResearchEvidence[]
+  scoreDimensions        ProductScoreDimension[]
+
+  @@index([discoveredInRunId])
+}
+
+/// Join between a Product and one external-source observation of it (a
+/// specific Reddit post, HN story, etc). Named *Record* — not *Source* — so
+/// it doesn't clash with the ProductSource TS interface in
+/// src/features/discovery/source.types.ts.
+model ProductSourceRecord {
+  id          String   @id @default(cuid())
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  source      SourceId
+  externalId  String
+  url         String
+  observedAt  DateTime
+  rawMetadata Json
+  createdAt   DateTime @default(now())
+
+  @@unique([source, externalId])
+  @@index([productId])
+}
+
+model PriceObservation {
+  id           String   @id @default(cuid())
+  productId    String
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  source       SourceId
+  price        Decimal  @db.Decimal(10, 2)
+  currency     String
+  shippingCost Decimal? @db.Decimal(10, 2)
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([productId, observedAt])
+}
+
+/// Fixed for the code-review finding "Demand Momentum mixes incomparable
+/// metrics from a single snapshot" (build spec section 2: never fabricate a
+/// metric). Two things changed from the original shape:
+///
+/// 1. `observedAt` is now strictly the FETCH time (when this value was
+///    recorded), never the underlying post/story's own creation time. That
+///    creation time is kept separately as `sourceCreatedAt` — evidence
+///    metadata only, never the momentum clock. Comparing values whose
+///    `observedAt` came from each post's own creation timestamp let one
+///    single-snapshot fetch (e.g. a Reddit post's `ups` vs `num_comments`,
+///    recorded together, but timestamped by when each was *posted*) look
+///    like two points in a real time series.
+/// 2. `sourceItemId` identifies the specific tracked item (a Reddit post id,
+///    an HN story id) a metric belongs to. Momentum may only ever compare
+///    two observations that share (source, sourceItemId, metric) — never
+///    `ups` vs `num_comments`, and never one post's series against a
+///    different post's series just because both surfaced the same Product.
+///
+/// The `@@unique` constraint is both the grouping key's integrity guarantee
+/// and the idempotency guard for job retries (S5): a retried niche-hunt job
+/// re-observes the same items at the same run's fetch time, so re-writing
+/// via upsert on this key can never double-insert.
+model DemandObservation {
+  id              String   @id @default(cuid())
+  productId       String
+  product         Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  source          SourceId
+  /// The tracked item this metric belongs to, e.g. a Reddit post id or HN
+  /// story id (matches ProductSourceRecord.externalId for the same source).
+  sourceItemId    String
+  /// e.g. "ups", "num_comments", "points" — kept as a free string because
+  /// each source exposes different named metrics; the scoring engine only
+  /// needs value + observedAt ordering per (source, sourceItemId, metric),
+  /// not a fixed metric taxonomy.
+  metric          String
+  value           Float
+  unit            String?
+  /// When this value was FETCHED — the only clock Demand Momentum may ever
+  /// be measured against. Phase 1 has no re-observation scheduler, so this
+  /// is set once per research run (the run's own `startedAt`, stable across
+  /// BullMQ retries of the same job) rather than per-item.
+  observedAt      DateTime
+  /// The tracked item's own reported creation/publish time (e.g. the Reddit
+  /// post's `created_utc`). Evidence metadata only — never used as the
+  /// momentum clock.
+  sourceCreatedAt DateTime
+  createdAt       DateTime @default(now())
+
+  @@unique([productId, source, sourceItemId, metric, observedAt], name: "demandObservation_naturalKey")
+  @@index([productId, observedAt])
+  @@index([productId, source, sourceItemId, metric])
+}
+
+/// Schema-only in Phase 1 — no writer yet. Reserved for Phase 2/3 trend
+/// sources (Google Trends etc).
+model TrendObservation {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  source     SourceId
+  metric     String
+  value      Float
+  period     String
+  observedAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([productId, observedAt])
+}
+
+/// Schema-only in Phase 1 — no writer yet. Reserved for Phase 2 supplier
+/// research (AliExpress enrichment etc).
+model SupplierObservation {
+  id           String   @id @default(cuid())
+  productId    String
+  product      Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  supplier     String
+  supplierUrl  String
+  price        Decimal? @db.Decimal(10, 2)
+  shipping     Decimal? @db.Decimal(10, 2)
+  shippingTime String?
+  rating       Float?
+  orderCount   Int?
+  reviews      Int?
+  observedAt   DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([productId, observedAt])
+}
+
+/// Schema-only in Phase 1 — no writer yet. Reserved for Phase 3 competitor
+/// intelligence.
+model CompetitorObservation {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  competitor String
+  url        String
+  price      Decimal? @db.Decimal(10, 2)
+  detectedAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([productId, detectedAt])
+}
+
+model ResearchRun {
+  id             String            @id @default(cuid())
+  startedAt      DateTime          @default(now())
+  finishedAt     DateTime?
+  /// Source ids attempted for this run (e.g. ["REDDIT", "HACKER_NEWS"]).
+  sources        String[]
+  status         ResearchRunStatus @default(PENDING)
+  candidateCount Int               @default(0)
+  /// Per-source failures collected during the run so one adapter failing
+  /// never aborts the whole run (spec section 14). Shape:
+  /// [{ source, message, occurredAt }].
+  errors         Json?
+  niche          String
+  subreddits     String[]          @default([])
+  createdAt      DateTime          @default(now())
+
+  candidates Product[]
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+model ResearchEvidence {
+  id         String   @id @default(cuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  source     SourceId
+  claim      String
+  value      String?
+  url        String?
+  observedAt DateTime
+  confidence Float?
+  createdAt  DateTime @default(now())
+
+  /// Idempotency guard (S5): a retried niche-hunt job re-enriches the same
+  /// items and would otherwise double-insert the same fact. `observedAt`
+  /// here is the underlying item's own timestamp (deterministic per source
+  /// item, so it doesn't change between retries), not the fetch time.
+  @@unique([productId, source, claim, observedAt], name: "researchEvidence_naturalKey")
+  @@index([productId])
+}
+
+model ProductScoreDimension {
+  id         String         @id @default(cuid())
+  productId  String
+  product    Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  dimension  ScoreDimension
+  /// Null whenever status is INSUFFICIENT_DATA — never a fabricated number.
+  score      Int?
+  status     ScoreStatus
+  reason     String?
+  computedAt DateTime       @default(now())
+
+  @@unique([productId, dimension])
+  @@index([productId])
+}
