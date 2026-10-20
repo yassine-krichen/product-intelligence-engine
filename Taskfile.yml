@@ -36,6 +36,11 @@ tasks:
     cmds:
       - npx tsx watch src/features/jobs/worker.ts
 
+  pie:
+    desc: 'Run the pie research CLI (usage: task product-intelligence-engine:pie -- candidate list)'
+    cmds:
+      - npx tsx --conditions=react-server src/cli/index.ts {{.CLI_ARGS}}
+
   stop:
     desc: Kill whatever is listening on port {{.PORT}} (Windows/PowerShell)
     cmds:

@@ -1,6 +1,6 @@
 /**
  * Deterministic candidate-name normalization — no AI call in Phase 1.
- * Used purely as a dedup key so the same product mentioned on Reddit and HN
+ * Used purely as a dedup key so the same product mentioned on Reddit (agent-recorded) and HN
  * (or twice on the same source) collapses to one Product row.
  */
 

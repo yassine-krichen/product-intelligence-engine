@@ -19,7 +19,6 @@ const POLL_INTERVAL_MS = 2_000;
  */
 export function NicheHuntForm(): React.JSX.Element {
   const [niche, setNiche] = useState('');
-  const [subreddits, setSubreddits] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeRun, setActiveRun] = useState<RunStatusSnapshot | null>(null);
@@ -55,19 +54,11 @@ export function NicheHuntForm(): React.JSX.Element {
     setError(null);
     setSubmitting(true);
 
-    const subredditList = subreddits
-      .split(',')
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
-
     try {
       const response = await fetch('/api/research-runs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          niche,
-          subreddits: subredditList.length > 0 ? subredditList : undefined,
-        }),
+        body: JSON.stringify({ niche }),
       });
 
       const data: { id?: string; error?: string } = await response.json();
@@ -110,25 +101,12 @@ export function NicheHuntForm(): React.JSX.Element {
         />
       </div>
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="subreddits" className="text-xs font-medium text-neutral-600 dark:text-neutral-400">
-          Subreddits (comma-separated, optional)
-        </label>
-        <input
-          id="subreddits"
-          value={subreddits}
-          onChange={(event) => setSubreddits(event.target.value)}
-          placeholder="dropship, Entrepreneur"
-          className="rounded border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
-        />
-      </div>
-
       <button
         type="submit"
         disabled={submitting}
         className="self-start rounded bg-neutral-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50 dark:bg-neutral-100 dark:text-neutral-900"
       >
-        {submitting ? 'Starting…' : 'Start Niche Hunt'}
+        {submitting ? 'Starting…' : 'Start Hacker News Hunt'}
       </button>
 
       {error && <p className="text-sm text-red-600 dark:text-red-400">{error}</p>}

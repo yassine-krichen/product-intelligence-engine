@@ -1,8 +1,8 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '@/lib/prisma';
 import { computeScoresForProduct } from '@/features/scoring/score-dimensions';
-import { redditAdapter } from './adapters/reddit.adapter';
 import { hnAdapter } from './adapters/hn.adapter';
+import { googleTrendsAdapter } from '@/features/trends/google-trends.adapter';
 import { tiktokAdapter, amazonAdapter, aliexpressAdapter } from './adapters/stub.adapter';
 import { normalizeTitle } from './normalize';
 import type { DiscoveryInput, ProductSource, RawProduct, SourceHealth } from './source.types';
@@ -10,15 +10,21 @@ import type { DiscoveryInput, ProductSource, RawProduct, SourceHealth } from './
 /**
  * DISCOVER -> NORMALIZE -> DEDUPLICATE -> ENRICH -> CALCULATE
  *
- * Phase 1 only wires up Reddit + HN for actual discovery (spec: "one or two
- * reliable sources"). The stub sources still appear in ALL_SOURCES so the
- * dashboard's source-health panel can show them as NOT_IMPLEMENTED rather
- * than silently pretending they don't exist.
+ * Only Hacker News is wired for automated discovery. Reddit's public .json
+ * endpoints return 403 to unauthenticated clients (live-verified 2026-10-04,
+ * see README), so Reddit/TikTok/Amazon evidence is recorded by the Claude Code
+ * agent through the `pie` CLI instead. Google Trends measures a known keyword
+ * rather than discovering candidates, so it is health-checked but not a
+ * discovery source. The stub sources still appear in ALL_SOURCES so the
+ * dashboard's source-health panel shows them as NOT_IMPLEMENTED rather than
+ * silently pretending they don't exist.
  */
-const DISCOVERY_SOURCES: ProductSource[] = [redditAdapter, hnAdapter];
+const DISCOVERY_SOURCES: ProductSource[] = [hnAdapter];
+/** Max candidates one adapter call returns per hunt. */
+export const DISCOVERY_LIMIT = 25;
 export const ALL_SOURCES: ProductSource[] = [
-  redditAdapter,
   hnAdapter,
+  googleTrendsAdapter,
   tiktokAdapter,
   amazonAdapter,
   aliexpressAdapter,
@@ -27,7 +33,6 @@ export const ALL_SOURCES: ProductSource[] = [
 export interface NicheHuntParams {
   runId: string;
   niche: string;
-  subreddits: string[];
 }
 
 interface RunErrorEntry {
@@ -67,7 +72,7 @@ export async function discoverFromSources(
     if (result.status === 'fulfilled') {
       rawProducts.push(...result.value.items);
       // S6 fix: a source can succeed overall while still losing part of its
-      // own input (e.g. one subreddit out of several failing to fetch).
+      // own input (e.g. one of several sub-requests failing).
       // Those partial failures are data gaps too (spec section 2/14) — fold
       // them into the same `errors` trail as a full adapter failure instead
       // of leaving them to only reach a `console.warn` no one downstream
@@ -255,6 +260,10 @@ async function persistGroupObservations(
               value: fact.value,
               url: fact.url,
               confidence: fact.confidence,
+              method: fact.method ?? 'API',
+              metric: fact.metric ?? null,
+              numericValue: fact.numericValue ?? null,
+              unit: fact.unit ?? null,
             },
             create: {
               productId,
@@ -264,6 +273,10 @@ async function persistGroupObservations(
               url: fact.url,
               observedAt: fact.observedAt,
               confidence: fact.confidence,
+              method: fact.method ?? 'API',
+              metric: fact.metric ?? null,
+              numericValue: fact.numericValue ?? null,
+              unit: fact.unit ?? null,
             },
           });
         }
@@ -288,7 +301,7 @@ async function persistGroupObservations(
  * 16).
  */
 export async function runNicheHunt(params: NicheHuntParams): Promise<void> {
-  const { runId, niche, subreddits } = params;
+  const { runId, niche } = params;
 
   // S2 fix: ioredis's offline queue (`maxRetriesPerRequest: null`, see
   // src/lib/redis.ts) can buffer a `queue.add` call and deliver it once Redis
@@ -326,7 +339,7 @@ export async function runNicheHunt(params: NicheHuntParams): Promise<void> {
 
   const { rawProducts, errors: discoveryErrors } = await discoverFromSources(
     DISCOVERY_SOURCES,
-    { niche, subreddits, limit: 25 }
+    { niche, limit: DISCOVERY_LIMIT }
   );
 
   const { groups, dropped } = groupByNormalizedName(rawProducts);

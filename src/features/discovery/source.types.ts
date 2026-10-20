@@ -7,12 +7,29 @@
  * adapters/stub.adapter.ts.
  */
 
-export type SourceId =
-  | 'REDDIT'
-  | 'HACKER_NEWS'
-  | 'TIKTOK'
-  | 'AMAZON'
-  | 'ALIEXPRESS';
+/**
+ * Mirrors the Prisma `SourceId` enum (source-id.test.ts fails if they drift).
+ * REDDIT, TIKTOK_CREATIVE_CENTER, AMAZON_MOVERS_SHAKERS and WEB have no
+ * automated adapter — they label evidence the Claude Code agent recorded from
+ * public web pages via the `pie` CLI (see AGENT_PLAYBOOK.md).
+ */
+export const SOURCE_IDS = [
+  'REDDIT',
+  'HACKER_NEWS',
+  'TIKTOK',
+  'AMAZON',
+  'ALIEXPRESS',
+  'TIKTOK_CREATIVE_CENTER',
+  'AMAZON_MOVERS_SHAKERS',
+  'GOOGLE_TRENDS',
+  'WEB',
+] as const;
+
+export type SourceId = (typeof SOURCE_IDS)[number];
+
+/** Mirrors the Prisma `EvidenceMethod` enum. */
+export const EVIDENCE_METHODS = ['API', 'AGENT_WEB_READ', 'MANUAL'] as const;
+export type EvidenceMethodValue = (typeof EVIDENCE_METHODS)[number];
 
 export type SourceHealthStatus =
   | 'HEALTHY'
@@ -23,8 +40,6 @@ export type SourceHealthStatus =
 export interface DiscoveryInput {
   /** Free-text niche keyword the user is hunting in, e.g. "pet accessories". */
   niche: string;
-  /** Optional subreddit allowlist for sources that need one (Reddit). */
-  subreddits?: string[];
   /** Max candidates a single adapter call should return. */
   limit?: number;
 }
@@ -49,6 +64,12 @@ export interface ProductEvidence {
   observedAt: Date;
   /** 0–1. How much weight this single observation should carry. */
   confidence: number;
+  /** Defaults to API for adapter-produced evidence. */
+  method?: EvidenceMethodValue;
+  /** Structured measurement; omit all three for a qualitative claim. */
+  metric?: string;
+  numericValue?: number;
+  unit?: string;
 }
 
 export interface SourceHealth {

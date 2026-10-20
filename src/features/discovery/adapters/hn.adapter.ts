@@ -33,12 +33,14 @@ function isHttpUrl(value: string): boolean {
 
 const HttpUrlSchema = z.string().refine(isHttpUrl, { message: 'must be an http(s) URL' });
 
+// Algolia omits (not just nulls) `url`/`points`/`num_comments` on text-only
+// stories such as Ask HN — found by a live run, 2026-10-04; hence nullish.
 const HnHitSchema = z.object({
   objectID: z.string(),
-  title: z.string().nullable(),
-  url: HttpUrlSchema.nullable(),
-  points: z.number().nullable(),
-  num_comments: z.number().nullable(),
+  title: z.string().nullish(),
+  url: HttpUrlSchema.nullish(),
+  points: z.number().nullish(),
+  num_comments: z.number().nullish(),
   // Also validated as a real ISO datetime (not just any string) — Algolia
   // has always returned one in practice, but this endpoint is untrusted
   // third-party input and must never be assumed well-formed (spec section 2/18).
@@ -63,7 +65,7 @@ async function searchStories(query: string, limit: number): Promise<RawProduct[]
   const parsed = HnResponseSchema.parse(json);
 
   return parsed.hits
-    .filter((hit) => hit.title !== null)
+    .filter((hit) => typeof hit.title === 'string')
     .map(
       (hit): RawProduct => ({
         source: 'HACKER_NEWS',
@@ -90,8 +92,7 @@ export const hnAdapter: ProductSource = {
   async discover(input: DiscoveryInput): Promise<DiscoverResult> {
     const niche = input.niche.trim();
     if (niche.length === 0) return { items: [], warnings: [] };
-    // Single request, no per-item fan-out to partially fail (unlike Reddit's
-    // per-subreddit fetches) — always empty warnings.
+    // Single request, no per-item fan-out to partially fail — always empty warnings.
     const items = await searchStories(niche, input.limit ?? 25);
     return { items, warnings: [] };
   },
@@ -108,6 +109,10 @@ export const hnAdapter: ProductSource = {
         url: product.url,
         observedAt: product.observedAt,
         confidence: 0.6,
+        method: 'API',
+        metric: 'points',
+        numericValue: points,
+        unit: 'points',
       });
     }
 
@@ -118,6 +123,10 @@ export const hnAdapter: ProductSource = {
         url: product.url,
         observedAt: product.observedAt,
         confidence: 0.5,
+        method: 'API',
+        metric: 'num_comments',
+        numericValue: comments,
+        unit: 'comments',
       });
     }
 

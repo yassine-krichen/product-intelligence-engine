@@ -115,13 +115,13 @@ describe('discoverFromSources', () => {
   });
 
   // S6 regression test: a source can succeed overall (some items returned)
-  // while still losing part of its own input (e.g. one subreddit of several
-  // failing to fetch). That partial failure must be recorded on the run's
+  // while still losing part of its own input (e.g. one of several
+  // sub-requests failing to fetch). That partial failure must be recorded on the run's
   // error trail, not just reach a console log no one downstream ever sees.
   it('records a source-reported partial-failure warning as a run error even when the source itself succeeds', async () => {
     const partiallyFailingSource = fakeSource('REDDIT', async () => ({
       items: [rawProduct({ title: 'Surviving Product' })],
-      warnings: [{ message: 'Partial Reddit fetch failure: r/banned: 403 Forbidden' }],
+      warnings: [{ message: 'Partial fetch failure: query-2: 403 Forbidden' }],
     }));
 
     const { rawProducts, errors } = await discoverFromSources([partiallyFailingSource], input);
@@ -131,7 +131,7 @@ describe('discoverFromSources', () => {
     // ...and the partial failure is recorded as data, not silently dropped.
     expect(errors).toHaveLength(1);
     expect(errors[0]!.source).toBe('REDDIT');
-    expect(errors[0]!.message).toMatch(/r\/banned: 403 Forbidden/);
+    expect(errors[0]!.message).toMatch(/query-2: 403 Forbidden/);
   });
 
   it('does not abort the run when one source throws — partial results are kept and the error recorded', async () => {
@@ -197,7 +197,7 @@ describe('runNicheHunt PENDING guard', () => {
       findUniqueOrThrow,
     };
 
-    await runNicheHunt({ runId: 'run-1', niche: 'pet accessories', subreddits: [] });
+    await runNicheHunt({ runId: 'run-1', niche: 'pet accessories' });
 
     expect(updateMany).toHaveBeenCalledWith({
       where: { id: 'run-1', status: 'PENDING' },

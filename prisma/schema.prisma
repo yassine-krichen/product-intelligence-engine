@@ -2,10 +2,11 @@
 //
 // Phase 1 scope: Product, ProductSourceRecord, PriceObservation,
 // DemandObservation, ResearchRun, ResearchEvidence, ProductScoreDimension are
-// live (written to by the discovery pipeline / scoring engine).
-// TrendObservation, SupplierObservation, CompetitorObservation are schema-only
-// in Phase 1 — no writer exists yet (Phase 2/3), but the shape is defined now
-// so later phases don't require a migration to bolt on the concept.
+// live (written to by the discovery pipeline / scoring engine / `pie` CLI).
+// TrendObservation is written by the Google Trends client (`pie trends check`).
+// SupplierObservation, CompetitorObservation are schema-only — no writer yet
+// (Phase 2/3), but the shape is defined now so later phases don't require a
+// migration to bolt on the concept.
 //
 // Design rule (spec section 6): there is never a single "score" field on
 // Product. Every scoring dimension is its own ProductScoreDimension row, so a
@@ -25,12 +26,30 @@ datasource db {
 /// (rather than a free string) so adapters and scoring code share one set of
 /// valid values; stub sources are included so the interface can be proven
 /// provider-agnostic without a real integration.
+///
+/// REDDIT, TIKTOK_CREATIVE_CENTER, AMAZON_MOVERS_SHAKERS and WEB have no
+/// automated adapter: they mean "evidence recorded by the Claude Code agent
+/// from public web pages" (method AGENT_WEB_READ, see AGENT_PLAYBOOK.md).
+/// Keep in sync with SOURCE_IDS in src/features/discovery/source.types.ts
+/// (a unit test enforces it).
 enum SourceId {
   REDDIT
   HACKER_NEWS
   TIKTOK
   AMAZON
   ALIEXPRESS
+  TIKTOK_CREATIVE_CENTER
+  AMAZON_MOVERS_SHAKERS
+  GOOGLE_TRENDS
+  WEB
+}
+
+/// How a piece of evidence was obtained. Only API and AGENT_WEB_READ rows
+/// with a URL can count as a measured signal for the credibility verdict.
+enum EvidenceMethod {
+  API
+  AGENT_WEB_READ
+  MANUAL
 }
 
 enum ResearchRunStatus {
@@ -180,20 +199,30 @@ model DemandObservation {
   @@index([productId, source, sourceItemId, metric])
 }
 
-/// Schema-only in Phase 1 — no writer yet. Reserved for Phase 2/3 trend
-/// sources (Google Trends etc).
+/// Weekly interest points from a trend source (Google Trends). `observedAt` is
+/// the data point's own date; `fetchedAt`/`expiresAt` implement the spec
+/// section 15 cache contract (a fresh-enough fetch is reused, never re-scraped).
 model TrendObservation {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   productId  String
-  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  product    Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
   source     SourceId
+  /// The search term the series was fetched for (not necessarily the product name).
+  keyword    String    @default("")
+  /// ISO country code, or "" for worldwide.
+  geo        String    @default("")
   metric     String
   value      Float
   period     String
+  url        String?
   observedAt DateTime
-  createdAt  DateTime @default(now())
+  fetchedAt  DateTime  @default(now())
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
 
+  @@unique([productId, source, keyword, geo, metric, observedAt], name: "trendObservation_naturalKey")
   @@index([productId, observedAt])
+  @@index([productId, source, keyword, geo, expiresAt])
 }
 
 /// Schema-only in Phase 1 — no writer yet. Reserved for Phase 2 supplier
@@ -235,7 +264,7 @@ model ResearchRun {
   id             String            @id @default(cuid())
   startedAt      DateTime          @default(now())
   finishedAt     DateTime?
-  /// Source ids attempted for this run (e.g. ["REDDIT", "HACKER_NEWS"]).
+  /// Source ids attempted for this run (e.g. ["HACKER_NEWS"]).
   sources        String[]
   status         ResearchRunStatus @default(PENDING)
   candidateCount Int               @default(0)
@@ -244,6 +273,7 @@ model ResearchRun {
   /// [{ source, message, occurredAt }].
   errors         Json?
   niche          String
+  /// Legacy (Reddit .json adapter was removed); always empty for new runs.
   subreddits     String[]          @default([])
   createdAt      DateTime          @default(now())
 
@@ -254,16 +284,26 @@ model ResearchRun {
 }
 
 model ResearchEvidence {
-  id         String   @id @default(cuid())
-  productId  String
-  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
-  source     SourceId
-  claim      String
-  value      String?
-  url        String?
-  observedAt DateTime
-  confidence Float?
-  createdAt  DateTime @default(now())
+  id           String         @id @default(cuid())
+  productId    String
+  product      Product        @relation(fields: [productId], references: [id], onDelete: Cascade)
+  source       SourceId
+  claim        String
+  value        String?
+  url          String?
+  observedAt   DateTime
+  confidence   Float?
+  createdAt    DateTime       @default(now())
+  method       EvidenceMethod @default(API)
+  /// Short verbatim snippet from the source (max ~300 chars) so a human can
+  /// verify the claim against the page without re-reading all of it.
+  excerpt      String?
+  /// Structured measurement: `metric` names it, `numericValue` is the number
+  /// exactly as shown by the source, `unit` its unit. All null for a purely
+  /// qualitative claim — a claim without a number never counts as demand.
+  metric       String?
+  numericValue Float?
+  unit         String?
 
   /// Idempotency guard (S5): a retried niche-hunt job re-enriches the same
   /// items and would otherwise double-insert the same fact. `observedAt`

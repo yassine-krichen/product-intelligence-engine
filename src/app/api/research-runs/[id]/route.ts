@@ -106,7 +106,6 @@ export async function GET(
       candidateCount: true,
       errors: true,
       niche: true,
-      subreddits: true,
       createdAt: true,
       candidates: {
         select: {

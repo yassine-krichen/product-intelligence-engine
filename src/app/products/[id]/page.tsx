@@ -1,5 +1,6 @@
 import { notFound } from 'next/navigation';
 import { prisma } from '@/lib/prisma';
+import { assessCandidate } from '@/features/scoring/assess-candidate';
 import { StatusPill } from '../../_components/status-pill';
 
 export const dynamic = 'force-dynamic';
@@ -41,6 +42,8 @@ export default async function ProductDetailPage({
 
   if (!product) notFound();
 
+  const assessment = assessCandidate(product.evidence);
+
   const scoreByDimension = new Map(
     product.scoreDimensions.map((dimension) => [dimension.dimension, dimension])
   );
@@ -57,6 +60,39 @@ export default async function ProductDetailPage({
           First discovered {product.createdAt.toLocaleString()} · Last updated{' '}
           {product.updatedAt.toLocaleString()}
         </p>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-xs font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400">
+          Credibility
+        </h2>
+        {/*
+          Verdict comes only from measured evidence (number + URL, from an API
+          or an agent web read) across independent sources — see
+          assessCandidate. Reasons and gaps are shown so "why not PROMISING?"
+          always has an answer on the page.
+        */}
+        <div className="flex items-center gap-3 text-sm">
+          <StatusPill status={assessment.verdict} />
+          <span className="tabular text-neutral-600 dark:text-neutral-400">
+            {assessment.independentSources} independent measured source(s)
+          </span>
+        </div>
+        <ul className="mt-2 flex list-disc flex-col gap-0.5 pl-5 text-sm text-neutral-700 dark:text-neutral-300">
+          {assessment.reasons.map((reason) => (
+            <li key={reason}>{reason}</li>
+          ))}
+        </ul>
+        {assessment.gaps.length > 0 && (
+          <>
+            <h3 className="mt-3 text-xs font-medium text-neutral-500 dark:text-neutral-400">Gaps</h3>
+            <ul className="mt-1 flex list-disc flex-col gap-0.5 pl-5 text-sm text-neutral-600 dark:text-neutral-400">
+              {assessment.gaps.map((gap) => (
+                <li key={gap}>{gap}</li>
+              ))}
+            </ul>
+          </>
+        )}
       </section>
 
       <section>
@@ -161,7 +197,7 @@ export default async function ProductDetailPage({
                   {fact.value ? `: ${fact.value}` : ''}
                 </span>
                 <span className="tabular text-xs text-neutral-500 dark:text-neutral-400">
-                  {fact.source} · {fact.observedAt.toLocaleString()}
+                  {fact.source} · {fact.method} · {fact.observedAt.toLocaleString()}
                   {typeof fact.confidence === 'number' ? ` · confidence ${fact.confidence}` : ''}
                   {fact.url && (
                     <>
@@ -177,6 +213,11 @@ export default async function ProductDetailPage({
                     </>
                   )}
                 </span>
+                {fact.excerpt && (
+                  <span className="text-xs italic text-neutral-500 dark:text-neutral-400">
+                    “{fact.excerpt}”
+                  </span>
+                )}
               </li>
             ))}
           </ul>

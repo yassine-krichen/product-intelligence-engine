@@ -60,7 +60,7 @@ describe('POST /api/research-runs', () => {
   });
 
   it('rejects a missing niche with 400', async () => {
-    const response = await POST(postRequest({ subreddits: ['petaccessories'] }));
+    const response = await POST(postRequest({}));
 
     expect(response.status).toBe(400);
     expect(createRunMock).not.toHaveBeenCalled();
@@ -74,39 +74,16 @@ describe('POST /api/research-runs', () => {
     expect(createRunMock).not.toHaveBeenCalled();
   });
 
-  it('rejects a malicious/malformed subreddit name (path traversal) with 400 before enqueueing', async () => {
+  it('ignores a legacy subreddits field instead of passing it to the run or the queue', async () => {
     const response = await POST(
       postRequest({ niche: 'pet accessories', subreddits: ['../../admin'] })
     );
 
-    expect(response.status).toBe(400);
-    expect(createRunMock).not.toHaveBeenCalled();
-    expect(enqueueNicheHuntMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects an SSRF-style absolute-URL subreddit with 400 before enqueueing', async () => {
-    const response = await POST(
-      postRequest({
-        niche: 'pet accessories',
-        subreddits: ['http://169.254.169.254/latest/meta-data'],
-      })
-    );
-
-    expect(response.status).toBe(400);
-    expect(createRunMock).not.toHaveBeenCalled();
-    expect(enqueueNicheHuntMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects a subreddit list over the max length with 400', async () => {
-    const response = await POST(
-      postRequest({
-        niche: 'pet accessories',
-        subreddits: Array.from({ length: 11 }, (_, i) => `sub${i}`),
-      })
-    );
-
-    expect(response.status).toBe(400);
-    expect(createRunMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(202);
+    expect(createRunMock).toHaveBeenCalledWith({
+      data: { niche: 'pet accessories', sources: ['HACKER_NEWS'], status: 'PENDING' },
+    });
+    expect(enqueueNicheHuntMock).toHaveBeenCalledWith({ runId: 'run-1', niche: 'pet accessories' });
   });
 
   it('returns 429 and never reaches validation/enqueue when rate-limited', async () => {
@@ -120,9 +97,7 @@ describe('POST /api/research-runs', () => {
   });
 
   it('accepts a well-formed request, creates the run, and enqueues the job', async () => {
-    const response = await POST(
-      postRequest({ niche: 'pet accessories', subreddits: ['petaccessories'] })
-    );
+    const response = await POST(postRequest({ niche: 'pet accessories' }));
 
     expect(response.status).toBe(202);
     expect(createRunMock).toHaveBeenCalledTimes(1);

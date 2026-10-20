@@ -59,3 +59,24 @@ audit found should not be repeated.
 
 **Verdict:** cherry-pick-components-only. ProdIntel was not used as a fork target; its
 architecture was not inherited.
+
+---
+
+## RESEARCH REFERENCES (added 2026-10-04, Phase 1.5)
+
+These were consulted while building the Google Trends client, the trend classifier and the discovery
+approach. **No code was copied from any of them**; the Google Trends client in
+`src/features/trends/google-trends.client.ts` is original, informed only by the public request pattern
+(landing-page cookie, explore call for a widget token, widgetdata call for the series) that the MIT
+projects below also document.
+
+| Project | License | Used for | Status |
+|---|---|---|---|
+| `trendspyg` (Python) | MIT | Reference for Google Trends cookie/consent handling and request pacing | Reference only, no code reused |
+| `trends-checker` (Python) | MIT | Reference for rate limiting and series fetching patterns | Reference only, no code reused |
+| `Keepa` API client libraries | Keepa client libs are MIT; the Keepa service is paid | Considered for Amazon price/rank history | Not used: the owner will not pay for Keepa |
+| `google-trends-api` (npm) | MIT | Live-tested on 2026-10-04 and it worked, but it was last published 2022-06 | Not adopted: an unmaintained dependency for ~150 lines of fetch code |
+| `AdDownloader` | **GPL-3.0** | Ad-library scraping reference | **NOT used.** GPL-3.0 would force this project's license; nothing from it is read, copied or linked |
+
+Licenses above are as recalled at the time of writing; re-verify before copying any code from them.
+If code is ever reused from one of these, move it to the "WHAT WAS REUSED" section with attribution.

@@ -33,7 +33,7 @@ describe('hnAdapter.discover', () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
       ok: true,
       json: async () => ({
-        hits: [{ objectID: '1' /* title/url/points/... missing */ }],
+        hits: [{ title: 'no id or date' /* objectID/created_at missing */ }],
       }),
     });
 
@@ -109,6 +109,27 @@ describe('hnAdapter.discover', () => {
     expect(result.items[0]!.metrics).not.toHaveProperty('num_comments');
   });
 
+  // Regression found by a live run on 2026-10-04: Algolia omits url/points/
+  // num_comments entirely (not null) on some stories, and the earlier schema
+  // threw on the whole response.
+  it('accepts hits where url, points and num_comments are absent rather than null', async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        hits: [
+          { objectID: 'story-9', title: 'Ask HN: best desk?', created_at: '2026-01-01T00:00:00.000Z' },
+          { objectID: 'story-10', created_at: '2026-01-01T00:00:00.000Z' },
+        ],
+      }),
+    });
+
+    const result = await hnAdapter.discover({ niche: 'desk' });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0]!.url).toBe('https://news.ycombinator.com/item?id=story-9');
+    expect(result.items[0]!.metrics).toEqual({});
+  });
+
   // S3 regression test.
   it('rejects a hit whose url is not http(s) instead of trusting it as an href', async () => {
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -148,5 +169,24 @@ describe('hnAdapter.discover', () => {
     });
 
     await expect(hnAdapter.discover({ niche: 'gadget' })).rejects.toThrow();
+  });
+});
+
+describe('hnAdapter.enrich', () => {
+  it('emits structured, API-method metrics so HN counts as a measured source', async () => {
+    const evidence = await hnAdapter.enrich({
+      source: 'HACKER_NEWS',
+      externalId: 'story-1',
+      title: 'A neat gadget',
+      url: 'https://example.com/gadget',
+      observedAt: new Date('2026-01-01T00:00:00.000Z'),
+      metrics: { points: 42, num_comments: 7 },
+      raw: {},
+    });
+
+    expect(evidence).toEqual([
+      expect.objectContaining({ method: 'API', metric: 'points', numericValue: 42 }),
+      expect.objectContaining({ method: 'API', metric: 'num_comments', numericValue: 7 }),
+    ]);
   });
 });

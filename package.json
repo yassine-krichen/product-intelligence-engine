@@ -8,6 +8,7 @@
     "build": "next build",
     "start": "next start -p 3005",
     "worker": "tsx watch src/features/jobs/worker.ts",
+    "pie": "tsx --conditions=react-server src/cli/index.ts",
     "typecheck": "tsc --noEmit",
     "prisma:validate": "prisma validate",
     "prisma:generate": "prisma generate",

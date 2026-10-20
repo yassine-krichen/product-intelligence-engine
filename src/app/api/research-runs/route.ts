@@ -3,22 +3,14 @@ import { z } from 'zod';
 import { prisma } from '@/lib/prisma';
 import { enqueueNicheHunt } from '@/features/jobs/queue';
 import { GLOBAL_RATE_LIMIT_KEY, isRateLimited } from '@/lib/rate-limit';
-import { isAllowedSubreddit } from '@/features/discovery/adapters/reddit.adapter';
 
 // Dynamic route handler — never statically generated. This calls Prisma and
 // enqueues a job on every request, and must not be evaluated at
 // `next build` time (spec: "next build must not require a live DATABASE_URL").
 export const dynamic = 'force-dynamic';
 
-// Same allowlist as reddit.adapter.ts — duplicated here deliberately so this
-// route rejects a malformed subreddit name before the job is even enqueued,
-// not just before the fetch happens deep in the adapter (spec section 18:
-// "rejects malformed subreddit names before they ever reach a fetch").
-const SUBREDDIT_ALLOWLIST = /^[A-Za-z0-9_]{2,21}$/;
-
 const CreateResearchRunSchema = z.object({
   niche: z.string().trim().min(2, 'niche must be at least 2 characters').max(100),
-  subreddits: z.array(z.string().regex(SUBREDDIT_ALLOWLIST)).max(10).optional(),
 });
 
 // S2 fix: an unreachable/slow Redis must never hang this request forever —
@@ -69,24 +61,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     );
   }
 
-  const { niche, subreddits = [] } = parsed.data;
-
-  // Defense in depth: this loop is redundant with the Zod regex above, but
-  // it guarantees no subreddit reaches enqueue/fetch without passing through
-  // the same allowlist function the adapter itself uses.
-  const rejected = subreddits.filter((subreddit) => !isAllowedSubreddit(subreddit));
-  if (rejected.length > 0) {
-    return NextResponse.json(
-      { error: `Rejected subreddit name(s): ${rejected.join(', ')}` },
-      { status: 400 }
-    );
-  }
+  const { niche } = parsed.data;
 
   const run = await prisma.researchRun.create({
     data: {
       niche,
-      subreddits,
-      sources: ['REDDIT', 'HACKER_NEWS'],
+      sources: ['HACKER_NEWS'],
       status: 'PENDING',
     },
   });
@@ -97,7 +77,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // 503 instead.
   try {
     await withTimeout(
-      enqueueNicheHunt({ runId: run.id, niche, subreddits }),
+      enqueueNicheHunt({ runId: run.id, niche }),
       ENQUEUE_TIMEOUT_MS,
       'Timed out enqueueing research run job (queue/Redis unreachable?).'
     );

@@ -1,186 +1,157 @@
 # Product Intelligence Engine
 
-A self-hosted product-research platform for finding and validating promising ecommerce/dropshipping
-product candidates from real, evidence-backed signals — not AI-invented metrics.
+*An evidence ledger for ecommerce product research: an agent records sourced observations, and a scoring engine refuses to call a product promising without independent, measured proof.*
 
-The system is evidence-first: every claim it shows is traceable to an actual observation with a
-source URL and timestamp. When a metric isn't known yet, the UI says `UNKNOWN` with a reason. It
-never fabricates sales, revenue, trend growth, or margin figures. See
-`../PRODUCT_INTELLIGENCE_BUILD_SPEC.md` for the full governing spec and `REUSE.md` for the
-repository audit this project's design is based on.
+![Next.js](https://img.shields.io/badge/Next.js-15-black?logo=nextdotjs)
+![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178c6?logo=typescript)
+![Prisma](https://img.shields.io/badge/Prisma-6.19-2d3748?logo=prisma)
+![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-lightgrey)
 
-## Phase 1 scope
+Product research tools tend to show sales and revenue estimates that nobody can trace. This project takes the opposite position: every claim it displays is an observation with a source, a URL, a timestamp and the method that produced it, and a metric that was never measured is shown as `UNKNOWN` with a reason. It does not estimate sales, revenue, trend growth or margin.
 
-This is Phase 1 of a 4-phase build (spec section 21). What's real vs. stubbed:
+Discovery is done by Claude Code. Following `AGENT_PLAYBOOK.md`, it searches the public web and records each finding through a Zod-validated CLI, `pie`, which writes to Postgres. Two automated adapters (Hacker News and Google Trends) write to the same ledger. A Next.js app reads the ledger and shows candidates, verdicts, evidence and gaps.
 
-| Area | Status |
-|---|---|
-| Data model (Product, observations, evidence, scores, research runs) | Live — full schema |
-| Reddit adapter (`/r/{subreddit}/hot.json`) | Live |
-| Hacker News adapter (Algolia search API) | Live |
-| TikTok / Amazon / AliExpress adapters | Stub only — prove the interface is provider-agnostic, no real scraping |
-| Discovery pipeline (discover → normalize → dedupe → enrich → calculate) | Live |
-| Demand Momentum scoring | Live — computed per (source, tracked item, metric); see note below |
-| Economics / Competition / Supplier Quality / Product Suitability scoring | Stub — always `INSUFFICIENT_DATA`, reason "not yet implemented (Phase 2/3)" |
-| TrendObservation, SupplierObservation, CompetitorObservation | Schema only — no writer yet |
-| Background jobs (BullMQ) | Live — niche-hunt jobs only |
-| API routes (start a run, poll a run) | Live |
-| Dashboard + product detail UI | Live |
-| AI agent layer, watchlist, alerts, competitor intelligence | Not built — Phase 2/3 |
+The verdict logic is deliberately strict. A candidate is `PROMISING` only when at least two independent sources each contributed a measured metric. One source is `WEAK`. Claims without numbers are `UNVERIFIED`. A single snapshot is never turned into a trend.
 
-### A note on Demand Momentum and INSUFFICIENT_DATA (read before filing this as a bug)
+## Features
 
-Demand Momentum requires the *same* tracked item (a specific Reddit post, a specific HN story) to
-have the *same* metric (e.g. `ups`, or `num_comments` — never compared against each other) observed
-at 2+ genuinely different fetch times. A single research run fetches everything once, so every
-metric it records has exactly one observation — that is a snapshot, not a trend, and cannot support
-a momentum calculation without inventing one.
+**Evidence ledger** — each row stores source, URL, observed time, method (`API`, `AGENT_WEB_READ`, `MANUAL`), an optional verbatim excerpt, and a structured metric, number and unit when a number was actually measured. `API` is reserved for in-repo adapters, so `pie evidence add` accepts only `AGENT_WEB_READ` and `MANUAL`.
 
-Phase 1 has no re-observation scheduler yet (that's Phase 2+ work), so **Demand Momentum will show
-`INSUFFICIENT_DATA` for essentially every product until the same product has been re-discovered
-across two or more separate research runs.** This is intentional and correct, not a bug to fix by
-lowering the observation threshold — see spec section 2 ("never fabricate a metric") and section 6
-("`INSUFFICIENT_DATA` ... is preferable to fake precision"). An earlier version of this pipeline
-computed momentum from a single run's `ups` vs. `num_comments` values (or from one post's creation
-timestamp vs. another's), which produced confident-looking but meaningless scores; that bug is what
-this note exists to prevent from being "fixed" again.
+**Credibility verdict** — `assessCandidate` (`src/features/scoring/assess-candidate.ts`) turns a candidate's ledger into `PROMISING`, `WEAK` or `UNVERIFIED`, lists the gaps, and surfaces contradictions between sources.
 
-## Stack
+**Conservative trend classification** — `analyzeTrendSeries` returns `UNKNOWN` on thin data and guards against seasonality, one-week spikes and tiny-base breakouts.
 
-- Next.js 15 (App Router), TypeScript strict, Tailwind CSS
-- Prisma + PostgreSQL (Neon-managed in production)
-- Redis (`ioredis`) + BullMQ for the background research-run queue
-- One Next.js app + one standalone worker process — no microservices
+**Agent-driven hunts** — `/hunt <niche>` runs the playbook: automated Hacker News signals first, then web reads of sources such as TikTok Creative Center and Amazon Movers & Shakers, recorded as evidence.
 
-## Setup
+**Automated adapters** — Hacker News through the Algolia search API, and Google Trends through its unofficial endpoints, rate-limited to one request every three seconds.
 
-1. Copy `.env.example` to `.env` and fill in real values:
-   - `DATABASE_URL` — a Postgres connection string. In production this points at a
-     [Neon](https://neon.tech) database. No local Postgres is required or assumed for
-     development in this environment — `npx prisma migrate dev` is intentionally not run here;
-     point `DATABASE_URL` at a real Neon database (or any reachable Postgres) before migrating.
-   - `REDIS_URL` — defaults to `redis://127.0.0.1:6379` for a local Redis Windows service.
-     [Upstash](https://upstash.com)'s `REDIS_URL` (a `rediss://...` TLS URL) works identically in
-     production — `ioredis` speaks both.
-   - `REDDIT_USER_AGENT` — a descriptive User-Agent string for Reddit's public JSON endpoints
-     (Reddit asks API consumers to identify themselves).
-2. Install dependencies and generate the Prisma client:
-   ```
-   task product-intelligence-engine:install
-   npx prisma generate
-   ```
-3. Once `DATABASE_URL` points at a real, reachable database, create the schema:
-   ```
-   npx prisma migrate dev --name init
-   ```
+**Background hunts from the UI** — the dashboard can start a Hacker News niche hunt; the API route only enqueues a BullMQ job and a separate worker runs it.
 
-## Running
+## How it works
 
-Via the root Taskfile (see `../ORCHESTRATION.md` for the full multi-project setup):
-
-```
-task product-intelligence-engine:dev      # Next.js app on port 3005
-task product-intelligence-engine:worker   # BullMQ worker (foreground, separate terminal)
+```mermaid
+graph LR
+  Agent["Claude Code (WebSearch, WebFetch)"] -->|"pie evidence add"| CLI["pie CLI (Zod-validated)"]
+  Adapters["HN and Google Trends adapters"] -->|"method API"| Ledger[("Postgres via Prisma")]
+  CLI --> Ledger
+  Ledger --> Score["scoring: assessCandidate, analyzeTrendSeries"]
+  Score --> UI["Next.js viewer"]
+  UI -->|"POST /api/research-runs"| Q[("BullMQ on Redis")]
+  Q --> Worker["worker"] --> Adapters
 ```
 
-The Next.js app alone can boot and serve the dashboard without Redis/a live database reachable —
-it just can't complete a research run without both. The worker is required for a submitted niche
-hunt to actually run; the API route only enqueues the job (spec section 16: long research work
-must never block an HTTP request).
+### Key decisions
 
-`task product-intelligence-engine:dev` is also wired into the root `process-compose.yaml`, so
-`process-compose up` from the repo root starts it alongside the other local apps. The worker is
-intentionally **not** part of `process-compose.yaml` — like `epub-to-audio-book`, it's an
-on-demand process you start manually with `task product-intelligence-engine:worker`.
+- **Agent plus CLI as the core, UI as a viewer**: the CLI talks to Prisma directly with no queue, server or Redis, so the agent can record evidence from a terminal. The web app only reads, apart from starting Hacker News hunts.
+- **Insufficient data over a guess**: Demand Momentum needs the same tracked item and the same metric observed at two or more genuinely different fetch times. A single research run produces one observation per metric, so momentum reads `INSUFFICIENT_DATA` until an item is re-discovered in a later run. An earlier version computed momentum from one run's `ups` against `num_comments`, which produced confident and meaningless scores; the threshold is not to be lowered to make the dashboard look fuller.
+- **Live-test every adapter before trusting it**: mocked fetches passed for an earlier Reddit adapter while the real endpoint returned 403. The adapter was removed. The table below records what each source returned when it was tested.
+- **Hand-minted numbers are blocked**: the `API` method cannot be set from the CLI, so a measured-looking signal cannot be created by hand.
+- **Untrusted text stays data**: arguments are Zod-validated (absolute http(s) URLs without credentials, length-capped text with control characters stripped, finite numbers, valid non-future dates). External API responses are parsed with Zod before storage. Scraped text renders as plain React children, with no `dangerouslySetInnerHTML`.
+- **Lazy queue construction**: the BullMQ `Queue` is created on first API call, not at import, so `next build` and `next dev` never touch Redis.
+- **Prisma pinned to 6.19.3**: Prisma 7 drops the `url` field from the `schema.prisma` datasource.
 
-## Using it
+## Source status
 
-1. Open `http://localhost:3005`.
-2. Under "Start Niche Hunt", enter a niche keyword (e.g. `pet accessories`) and, optionally, a
-   comma-separated subreddit list (e.g. `dropship, Entrepreneur`) to search on Reddit. Hacker News
-   is always searched by the niche keyword directly.
-3. The dashboard polls the run until it finishes, then lists it under "Recent Research Runs" and
-   any discovered products under "Recent Candidates".
-4. Open a candidate to see its 5 score dimensions, demand observation history, evidence, and raw
-   source records — every claim on the page links back to where it came from.
+Verified against the live network on 2026-10-04.
 
-## Deviations from the literal spec (and why)
+| Source | Result | Status |
+| --- | --- | --- |
+| Hacker News (Algolia) | HTTP 200, 25 normalized candidates. The run showed Algolia omits `url`, `points` or `num_comments` on some stories, which the old schema rejected; fixed | Adapter live |
+| Google Trends (unofficial) | HTTP 200 on landing page, explore and multiline calls; 7 keywords returned 262 weekly points each | Adapter live; can break or return 429 |
+| Reddit `.json` | HTTP 403 | Adapter removed |
+| Reddit RSS | HTTP 200 but no upvote or comment counts, so no measured metric | Not used |
+| TikTok Creative Center | JavaScript-rendered, no static product data | Agent-recorded evidence only when readable |
+| Amazon Movers & Shakers | curl returned 200 without percentages; fetch tool returned 503 | Flaky; the playbook records the gap instead of retrying |
 
-- **`Product.discoveredInRunId`** — not in the spec's literal entity list, but added so
-  `GET /api/research-runs/[id]` can return a run's candidates directly (a spec-required
-  behavior) without a separate join table. Only set at creation time, so re-running a hunt later
-  updates a product's signals without rewriting which run first discovered it.
-- **`Product.sourceUrls` can contain duplicate URLs across runs.** It's an atomic `push` on every
-  re-discovery of the same product (see the `upsertProduct` doc comment in
-  `src/features/discovery/pipeline.ts`), by design, so two research runs never race and lose one
-  another's URL — but that means the same URL can be appended more than once if the same product
-  surfaces again in a later run. This is a display convenience only; the authoritative,
-  already-deduplicated per-source record is `ProductSourceRecord` (unique on `(source, externalId)`).
-- **Prisma model name `ProductSourceRecord`** instead of the spec's `ProductSource` — the spec's
-  own `ProductSource` name is already used for the TypeScript adapter interface
-  (`src/features/discovery/source.types.ts`); the build task itself flagged this and asked for
-  the DB model to be renamed to avoid the clash.
-- **Prisma 7.10.0 pinned instead of the `latest` npm dist-tag** — at build time, `npm view prisma
-  dist-tags.latest` resolved to an `8.0.0-rc.*` release candidate. Pinned to the last stable 7.x
-  release instead (boring/stable over bleeding-edge, per this project's engineering standards).
-- **Tailwind CSS v4** — the spec just says "Tailwind"; v4 is the current stable major and uses a
-  CSS-first config (`@import "tailwindcss"` in `globals.css`, no `tailwind.config.ts` needed for
-  this project's scope) rather than v3's JS config file.
-- **In-memory rate limiter** (`src/lib/rate-limit.ts`) is explicitly a Phase 1 placeholder, as the
-  spec allows ("documented as a placeholder for a real limiter later") — it does not share state
-  across instances or survive a restart.
+Scoring status: Demand Momentum is implemented. Economics, Competition, Supplier Quality and Product Suitability are stubs that always return `INSUFFICIENT_DATA`. `SupplierObservation` and `CompetitorObservation` exist in the schema with no writer yet. TikTok, Amazon and AliExpress adapters are stubs that report `NOT_IMPLEMENTED`.
 
-## Known environment caveat: local Redis version
+Hacker News titles are articles and discussions rather than product names, so HN candidates are leads, not validated products.
 
-This machine's local Redis Windows service reports version 3.0.504. BullMQ requires Redis >= 5.0
-and will throw `Redis version needs to be greater or equal than 5.0.0` as soon as a Queue/Worker
-actually connects. The Next.js app itself is unaffected at boot or build time (see
-`src/features/jobs/queue.ts` — the BullMQ `Queue` is constructed lazily on first API call, not at
-module load, specifically so `next build` and `next dev` never touch Redis just by starting up),
-but `task product-intelligence-engine:worker` will fail against this local Redis until it's
-upgraded to >= 5.0 or `REDIS_URL` is pointed at Upstash (which is already >= 5.0-compatible).
+## Tech stack
 
-## Known dependency advisories (accepted for Phase 1)
+| Technology | Role | Why |
+| --- | --- | --- |
+| Next.js 15 (App Router), React 19 | Viewer and API routes | — |
+| TypeScript (strict), Tailwind CSS 4 | Language and styling | — |
+| Prisma 6.19.3, PostgreSQL | Ledger storage | Pinned, see decisions |
+| BullMQ, ioredis | Background hunts | Needs Redis 5.0 or newer |
+| Zod 4 | Validation of CLI input and external responses | — |
+| tsx | Runs the `pie` CLI and the worker | `--conditions=react-server` lets the `server-only` guard pass outside Next |
+| Vitest | Tests | — |
 
-`npm audit` reports 7 advisories, all in transitive dev/build tooling — none in code that runs in
-the deployed app:
+## Getting started
 
-- `mysql2` / `deepmerge-ts` (high) — pulled in transitively by the `prisma` CLI's `@prisma/config`,
-  regardless of the fact this project only uses Postgres. Not present in `@prisma/client`, which is
-  the package that actually runs at request time.
-- `postcss` (high) — bundled inside `next`'s own internal `node_modules/next/node_modules/postcss`
-  (Next's internal build-time CSS handling), not the top-level `postcss`/`@tailwindcss/postcss`
-  this project declares.
-- `@vitest/mocker` (moderate) — test-only tooling, never shipped.
+Requirements: Node.js 20 or newer, a Postgres database (a [Neon](https://neon.tech) free tier works), and for UI-started hunts a Redis 5.0 or newer (Upstash works; `rediss://` URLs are fine).
 
-All three fixes require a breaking major bump (`prisma@6.19.3`'s own `npm audit fix --force`
-suggestion, or `next@16.x`) that would contradict this spec's pinned "Next.js 15" / the
-"boring/stable over bleeding-edge" reasoning above. Re-check `npm audit` next time dependencies
-are touched.
+```bash
+npm install
+cp .env.example .env     # set DATABASE_URL, and REDIS_URL for the worker
+npx prisma generate
+npx prisma migrate dev   # against a real, reachable database
 
-## Security notes (spec section 18)
+npm run dev              # app on http://localhost:3005
+npm run worker           # separate terminal, needed for UI-started hunts
+```
 
-- Subreddit names are validated against a strict allowlist (`^[A-Za-z0-9_]{2,21}$`) in **two**
-  places — the API route and the adapter itself — before ever being interpolated into a fetch URL.
-- Every external API response (Reddit, HN) is parsed with Zod before anything is trusted or
-  stored, including URL fields (must be `http`/`https`, never `javascript:`/`data:`/etc.) and the
-  Reddit `permalink` (must start with `/r/` before it's used to build a link).
-- Prisma, BullMQ, and all adapters are server-only; nothing DB- or queue-related is imported into
-  a client component. `src/lib/prisma.ts`, `src/lib/redis.ts`, and `src/features/jobs/queue.ts`
-  each `import 'server-only'` as a build-time guard against this, not just a code comment.
-- No `dangerouslySetInnerHTML` is used anywhere — scraped titles/text render as plain React
-  children.
-- The research-run POST route has a basic in-memory rate limit (see Deviations above). It
-  deliberately does **not** key on `x-forwarded-for` — with no trusted reverse proxy in front of
-  this Phase 1 deployment, that header is fully client-spoofable, so trusting it as an identity key
-  would make the limit trivially bypassable. Until real per-user auth exists, the limiter keys on a
-  single shared bucket instead (see `src/lib/rate-limit.ts`'s doc comment) — replace with
-  authenticated-user-based limiting before any multi-user deployment.
-- A failed/timed-out job enqueue (e.g. Redis unreachable) marks the just-created `ResearchRun`
-  `FAILED` and returns `503`, rather than leaving an orphaned `PENDING` run or an unhandled `500`.
-- `GET /api/research-runs/[id]` uses an explicit Prisma `select` (never the full row) and sanitizes
-  every stored error entry before it reaches the client: whitespace is collapsed and the message is
-  truncated to a short single line, and any message matching a known internal-error shape (a raw
-  Prisma client invocation message, or one containing an absolute Windows/POSIX file path) is
-  replaced wholesale with a fixed generic string instead of being partially redacted — see
-  `sanitizeMessage` in that route file.
+The CLI:
+
+```bash
+npm run pie -- candidate add --name 'LED Dog Collar' --niche 'pet accessories'
+npm run pie -- evidence add --candidate 'LED Dog Collar' --source AMAZON_MOVERS_SHAKERS \
+  --claim 'In Pet Supplies Movers & Shakers' \
+  --url 'https://www.amazon.com/gp/movers-and-shakers/pet-supplies' \
+  --metric sales_rank_change_pct --value 420 --unit '%' \
+  --excerpt 'verbatim snippet' --observed-at 2026-10-04
+npm run pie -- candidate show 'LED Dog Collar'   # ledger, verdict, gaps, score dimensions
+npm run pie -- hunt hn --niche 'standing desk' --dry-run
+npm run pie -- trends check --dry-run --keyword 'pickleball paddle'
+```
+
+Output is compact JSON (`--pretty` to format). Exit code 0 is success, 2 is bad usage or validation, 1 is a runtime failure. `candidate`, `evidence`, `score recompute`, `hunt hn` and `trends check` are the commands; `--help` lists everything. The two `--dry-run` commands need no database.
+
+Inside Claude Code, `/hunt standing desk converters` runs the playbook.
+
+## Configuration
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | Yes | Postgres connection string |
+| `REDIS_URL` | For the worker and UI hunts | Defaults to `redis://127.0.0.1:6379`; an Upstash `rediss://` URL works |
+
+## Testing
+
+```bash
+npm test
+```
+
+Vitest covers the CLI schemas and runner, the ledger service, verdict and trend logic, demand momentum, both adapters, the discovery pipeline and the API routes with the database mocked. Live-network behavior is not in the suite; it is recorded in the source status table above after manual runs.
+
+## Security notes
+
+- The research-run POST route has an in-memory rate limiter, which is a placeholder: it keeps no state across instances or restarts. It does not trust `x-forwarded-for`, which a client can spoof, so it uses one shared bucket until real per-user auth exists.
+- A failed enqueue marks the just-created `ResearchRun` as `FAILED` and returns 503 instead of leaving a `PENDING` row.
+- `GET /api/research-runs/[id]` selects explicit fields and replaces stored error messages that look like Prisma invocations or contain file paths with a generic string.
+- `npm audit` reports advisories in transitive tooling (the Prisma CLI's config package, a PostCSS copy bundled in Next, and Vitest's mocker). None is in code that runs in the deployed app, and the fixes need breaking major bumps.
+
+## Roadmap
+
+| Status | Item |
+| --- | --- |
+| Done | Ledger, `pie` CLI, credibility verdict, trend classification, HN and Google Trends adapters, viewer UI |
+| Planned | Re-observation scheduler, so Demand Momentum can leave `INSUFFICIENT_DATA` |
+| Planned | Economics, Competition and Supplier scoring with writers for supplier and competitor observations |
+| Planned | Per-user auth and a shared-state rate limiter |
+
+`REUSE.md` records the one outside repository that was audited for this design and states that no code was taken from it.
+
+## License
+
+**Source-available, not open source.** Product Intelligence Engine is published under the
+[PolyForm Strict License 1.0.0](LICENSE): you may read, run, and learn from the code
+for personal, research, or evaluation use.
+
+You may **not** use it commercially, redistribute it, rebrand it, or publish modified
+versions without written permission. Copyright (c) 2026 Yassine Krichen. All rights
+not granted by the license are reserved.
+
+For commercial licensing or collaboration: krichenyassine22@gmail.com
